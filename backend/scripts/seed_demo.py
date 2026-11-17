@@ -8,6 +8,7 @@ from src.settlement_models import Settlement
 from src.repair_models import RepairBay,RepairAppointment
 from src.spare_models import SpareStock,PartIssue
 from src.followup_models import RepairFollowup
+from src.risk_run_models import RiskRun
 
 def seed():
     Base.metadata.create_all(engine)
@@ -43,5 +44,5 @@ def seed():
         for code,part,qty in [('SP-HYD-01','hydraulic',20),('SP-ENG-01','engine',5),('SP-TRANS-01','transmission',3)]:
             if not s.scalar(select(SpareStock).where(SpareStock.code==code)):s.add(SpareStock(code=code,part=part,available_qty=qty))
     with Session() as s:
-        print(json.dumps({k:s.scalar(select(func.count()).select_from(v)) for k,v in [('users',User),('machines',Machine),('claims',Claim),('inspections',Inspection),('part_returns',PartReturn),('settlements',Settlement),('repair_bays',RepairBay),('repair_appointments',RepairAppointment),('spare_stocks',SpareStock),('part_issues',PartIssue),('repair_followups',RepairFollowup)]}))
+        print(json.dumps({k:s.scalar(select(func.count()).select_from(v)) for k,v in [('users',User),('machines',Machine),('claims',Claim),('inspections',Inspection),('part_returns',PartReturn),('settlements',Settlement),('repair_bays',RepairBay),('repair_appointments',RepairAppointment),('spare_stocks',SpareStock),('part_issues',PartIssue),('repair_followups',RepairFollowup),('risk_runs',RiskRun)]}))
 if __name__=='__main__':seed()

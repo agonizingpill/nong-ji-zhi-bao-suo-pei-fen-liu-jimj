@@ -5,6 +5,9 @@ x-app: &app
     DATABASE_URL: mysql+pymysql://field:fieldpass@db/field
     REDIS_URL: redis://redis:6379/0
     JWT_SECRET: ${JWT_SECRET:-warranty-field-demo-change-me}
+    RISK_LEASE_SECONDS: ${RISK_LEASE_SECONDS:-60}
+    RISK_HEARTBEAT_SECONDS: ${RISK_HEARTBEAT_SECONDS:-8}
+    RISK_REPUSH_SECONDS: ${RISK_REPUSH_SECONDS:-20}
     SEED_DEMO: 'true'
   volumes: [artifacts:/artifacts]
   depends_on:
@@ -33,7 +36,7 @@ services:
       retries: 30
   worker:
     <<: *app
-    container_name: ${COMPOSE_PROJECT_NAME:-warranty-field}-worker
+    # 不固定 container_name，便于 docker compose up --scale worker=2 验证并发接管
     command: ['python','-m','src.worker']
     environment:
       <<: *env

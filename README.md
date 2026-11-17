@@ -28,8 +28,16 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 1. 机具台账：序列号唯一，累计工时不可倒退。
 2. 索赔受理：关联真实机具，故障工时不得低于台账；超质保工时直接标记过保，不能赔付。
-3. 风险分流：Redis 队列交给 Python worker 计算，写回风险概率与模型证据；失败可重试。
+3. 风险分流：受理先在 `risk_runs` 落库，再向 Redis 投递提示；Python worker 领取租约计算，同日志事务写回风险概率、模型依据与完成状态。进程在受理后、入队前或计算后、回写前中断，重启或租约到期后自动接管原次任务；重复投递不重复生效，失联旧执行晚回不能覆盖结果。页面可查本次运行进度、接管记录与失败原因，并从失败原次重试。
 4. 拆检裁决：评估员补拆检意见；概率 ≥0.5 的高风险索赔必须证据完整才能赔付；主管裁决同时更新 Claim.status 和 Inspection.decision，结案不可再改。
+
+|接口|权限与用途|
+|---|---|
+|POST /claims/{id}/assess|admin/assessor 登记分流运行并入队；过保当场拦截|
+|GET /claims/{id}/risk-run|三角色读取本次运行状态、执行进程、接管次数与失败原因|
+|POST /claims/{id}/risk-run/retry|admin/assessor 从失败原次重试（新建运行，原次保留）|
+|POST /claims/{id}/risk-run/takeover|admin 立即接管失联执行者的原次任务|
+|POST /risk-runs/reconcile|admin 手动触发恢复扫描；后端启动与 worker 每 5 秒自动执行|
 
 5. 旧件返厂：索赔完成分流并有拆检意见后登记物流；每份索赔仅一单，实收序列必须匹配发件快照；收货证据不得覆盖，主管核验后冻结。
 6. 赔付结算：仅已赔付且旧件核验通过的现场索赔可生成费用核定单；Python Decimal 按配件费＋工时×费率计算金额上限；主管核定不得超额，核定后冻结金额，使用唯一记账凭证一次入账。
@@ -48,14 +56,14 @@ docker compose exec -T backend python -m scripts.seed_demo
 |后端|Python3.12、FastAPI、SQLAlchemy2、PyMySQL|
 |算法|scikit-learn1.6、NumPy；真实worker训练|
 |持久化|MySQL8，外键、唯一键、范围约束|
-|队列|Redis7 list；共享 artifacts 卷保存模型指标与心跳|
+|队列|Redis7 zset（按 run id 去重，仅作提示）；共享 artifacts 卷保存模型指标与心跳|
 |安全横切|JWT8小时、角色校验、PBKDF2口令、审计、请求追踪、全局错误恢复|
 
-`backend/src/models.py` 领域实体；`schemas.py` 请求约束；`claim_service.py` 状态与关联规则；`risk_model.py` 算法；`worker.py` 队列；`main.py` 路由；`middlewares.py` 请求追踪和错误恢复。`backend/scripts/seed_demo.py` 仅插入自然键缺失的演示记录，不覆盖修改。`frontend/src/pages/` 九业务页；`components/common.js` 共享导航、状态、标题和通知；`utils/api.js` API/会话/页面状态；`utils/format.js` 转义和格式化。
+`backend/src/models.py` 领域实体；`schemas.py` 请求约束；`claim_service.py` 状态与关联规则；`risk_model.py` 算法；`risk_run_models.py`/`risk_run_service.py` 分流运行日志、租约与恢复；`worker.py` 执行进程；`main.py` 路由；`middlewares.py` 请求追踪和错误恢复。`backend/scripts/seed_demo.py` 仅插入自然键缺失的演示记录，不覆盖修改。`frontend/src/pages/` 九业务页；`components/common.js` 共享导航、状态、标题和通知；`utils/api.js` API/会话/页面状态；`utils/format.js` 转义和格式化。
 
 角色、索赔状态、故障部位枚举分别在 `backend/src/constants.py` 与 `frontend/src/constants.js` 定义；请求部位在 `backend/src/schemas.py` 的 Literal 中约束；角色校验在 `security.py`/`main.py`，状态转换在 `claim_service.py`/`worker.py`。共用状态徽标在索赔/风险/拆检三页复用。
 
-环境变量 `.env.example`：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET；数据库连接和 Redis 地址在 Compose 内设置。命名卷 db-data、redis-data、artifacts。当前宿主默认网络池耗尽，因此显式使用10.221.22.0/24子网；若换环境冲突可修改Compose networks。五服务都有真实健康检查，backend/worker 等待 MySQL/Redis healthy，前端等待后端。默认 seed 失败记日志不阻止进程。生产前应替换演示口令和 JWT secret。
+环境变量 `.env.example`：COMPOSE_PROJECT_NAME、FRONTEND_PORT、BACKEND_PORT、DB_PORT、JWT_SECRET；可选 RISK_LEASE_SECONDS（租约秒数，默认60）、RISK_HEARTBEAT_SECONDS（续租间隔，默认8）、RISK_REPUSH_SECONDS（补投间隔，默认20）、RISK_QUEUE（队列名）；数据库连接和 Redis 地址在 Compose 内设置。命名卷 db-data、redis-data、artifacts。当前宿主默认网络池耗尽，因此显式使用10.221.22.0/24子网；若换环境冲突可修改Compose networks。五服务都有真实健康检查，backend/worker 等待 MySQL/Redis healthy，前端等待后端。默认 seed 失败记日志不阻止进程。生产前应替换演示口令和 JWT secret。
 
 本地开发：Python `pip install -r backend/requirements.txt`，设置 DATABASE_URL/REDIS_URL 后在 backend 下 `uvicorn src.main:app --reload`；前端仍由 Compose Nginx 代理。测试与截图都在仓库外层 `test-artifacts/gb-1022/`，不会混入源码。
 
@@ -97,6 +105,8 @@ seed新增BAY-HYD(8h/日)、BAY-QUICK(4h/日)、BAY-OFF停用，以及hydraulic2
 
 ## 已知范围
 
-不接真实经销商附件存储、赔款财务或外部消息。拆检证据是结构化完整性确认与文字记录，不上传图片。当前小型实现为单worker，进程在任务取出后意外退出时需要管理员将失败任务恢复或重建演示数据，未做可靠消息重投。固定 seed 为可重复演示，不代表真实索赔泛化性能。
+不接真实经销商附件存储、赔款财务或外部消息。拆检证据是结构化完整性确认与文字记录，不上传图片。固定 seed 为可重复演示，不代表真实索赔泛化性能。
+
+分流队列：`risk_runs` 是权威运行日志，Redis zset 只是提示，丢消息由协调扫描补投（后端启动后每 5 秒、worker 每 5 秒各扫一次），因此可安全运行多个 worker。执行者写回时须持有数据库中的当前租约令牌，租约到期（`RISK_LEASE_SECONDS`，默认 60 秒）后运行回到队列供任意进程原地接管；管理员也可在页面立即接管。重试新建一次运行并记录 `retry_of_run_id`，原次保留；风险概率、模型依据与 `Claim.status` 在同一事务提交，无概率的畸形结果判为失败而非半成品；已签署（paid/denied）索赔的运行一律作废，不补写概率或证据。
 
 License: MIT.
